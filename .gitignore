@@ -161,3 +161,4 @@ cython_debug/
 
 *.json
 hls4ml*
+!*.py

@@ -15,9 +15,13 @@ def parse_keras_config(model):
         layer_dict['class_name'] = class_name
         
         input_shape = layer.input_shape
+        if isinstance(input_shape, list) and len(input_shape) == 1:
+            input_shape = input_shape[0]
         layer_dict['input_shape'] = input_shape
         
         output_shape = layer.output_shape
+        if isinstance(output_shape, list) and len(output_shape) == 1:
+            output_shape = output_shape[0]
         layer_dict['output_shape'] = output_shape
         
         parameter_count = 0
@@ -32,14 +36,10 @@ def parse_keras_config(model):
         
         if class_name == 'Dense':
             layer_dict['neurons'] = int(layer_config['units'])
+            layer_dict['use_bias'] = layer_config['use_bias']
         elif class_name == 'Activation':
             layer_dict['activation'] = layer_config['activation']
-        elif class_name == 'BatchNormalization':
-            pass
-        elif class_name == 'Add':
-            pass
-        elif class_name == 'Concatenate':
-            pass
+        
         layer_dict['dtype'] = layer_config['dtype']
         
         layers_data.append(layer_dict)

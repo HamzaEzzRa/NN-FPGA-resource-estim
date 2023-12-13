@@ -7,7 +7,7 @@ import numpy as np
 class IntRange:
     def __init__(self, min_int: int, max_int: int):
         self.min = min(min_int, max_int)
-        self.max = max(max_int, min_int)
+        self.max = max_int
     
     def random_in_range(self, rng=None, endpoint=True):
         if rng is None:
@@ -18,7 +18,7 @@ class IntRange:
 class Power2Range:
     def __init__(self, min_int: int, max_int: int):
         self.min = min(min_int, max_int)
-        self.max = max(max_int, min_int)
+        self.max = max_int
         
         self.min_exp = max(0, int(math.log2(self.min)))
         self.max_exp = int(math.log2(self.max))
@@ -33,7 +33,7 @@ class Power2Range:
 class FloatRange:
     def __init__(self, min_float: float, max_float: float):
         self.min = min(min_float, max_float)
-        self.max = max(max_float, min_float)
+        self.max = max_float
     
     def random_in_range(self, rng=None):
         if rng is None:

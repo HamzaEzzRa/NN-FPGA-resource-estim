@@ -37,6 +37,11 @@ class GeneratorSettings:
     parameter_limit: int = 4096
 
     # Layer probabilities
+    global_bias_probability: float = 0.9
+    global_bn_probability: float = 0.2
+    global_dropout_probability: float = 0.4
+    global_skip_probability: float = 0.15
+    
     bias_probability_func: Callable[[float], float] = lambda x: 0.9
     bn_probability_func: Callable[[float], float] = lambda x: max(0, 0.8 - 2**(-x/5))
     dropout_probability_func: Callable[[float], float] = lambda x: max(0, 0.8 - 2**(-x/5))
@@ -82,40 +87,64 @@ def generate_fc_network(settings: GeneratorSettings, rng=None):
     input_layer = Input(shape=input_shape)
     input_list.append(input_layer)
     
+    model_bias = rng.random() < settings.global_bias_probability
+    model_bn = rng.random() < settings.global_bn_probability
+    model_dropout = rng.random() < settings.global_dropout_probability
+    model_skip = rng.random() < settings.global_skip_probability
+    
     n_layers = settings.layer_range.random_in_range(rng)
     for i in range(n_layers):
-        use_bias = rng.random() < settings.bias_probability_func(i + 1)
-        use_bn = i < n_layers - 1 and\
-            rng.random() < settings.bn_probability_func(i + 1)
+        x = input_list[-1]
+        
+        use_bias = model_bias and\
+            rng.random() < settings.bias_probability_func(i + 1)
+        use_bn = model_bn and i < n_layers - 1 and\
+            rng.random() < settings.bn_probability_func(i + 1) and\
+            (settings.parameter_limit <= 0 or x.shape[1] <= settings.parameter_limit // 4)
         
         dropout_rate = 0.0
-        if not use_bn and i < n_layers - 1\
+        if model_dropout and not use_bn and i < n_layers - 1\
             and rng.random() < settings.dropout_probability_func(i + 1):
                 dropout_rate = settings.dropout_range.random_in_range(rng)
         
         skip_inputs = None
-        if i > 0 and rng.random() < settings.skip_probability_func(i + 1):
-            skip_inputs = input_list[rng.integers(0, high=len(input_list) - 1)]
-        
-        x = input_list[-1]
-        
+        if model_skip and\
+            i > 0 and rng.random() < settings.skip_probability_func(i + 1):
+            skip_inputs = input_list[
+                rng.integers(0, high=len(input_list) - 1)
+            ]
+                
         unit_range = settings.neuron_range if i < n_layers - 1\
             else settings.output_range
+        range_class_name = unit_range.__class__.__name__
         units = unit_range.random_in_range(rng)
         if settings.parameter_limit > 0:
-            max_units = units
+            max_units = min(units, settings.parameter_limit // x.shape[1])
             if use_bias:
-                max_units = min(
-                    max_units,
-                    2 ** int(np.log2(settings.parameter_limit - max_units))
-                )
+                bias_limit = (settings.parameter_limit - max_units) // x.shape[1]
+                if bias_limit <= 0:
+                    max_units = 1
+                else:
+                    if range_class_name == 'Power2Range':
+                        bias_limit = 2 ** int(np.log2(bias_limit))
+                    max_units = min(
+                        max_units,
+                        bias_limit
+                    )
             if use_bn:
-                max_units = min(
-                    max_units,
-                    2 ** int(np.log2(settings.parameter_limit // 4))
-                )
+                bn_limit = (settings.parameter_limit // 4) // x.shape[1]
+                if bn_limit <= 0:
+                    max_units = 1
+                else:
+                    if range_class_name == 'Power2Range':
+                        bn_limit = 2 ** int(np.log2(bn_limit))
+                    max_units = min(
+                        max_units,
+                        bn_limit
+                    )
             if max_units != units:
-                units = Power2Range(settings.neuron_range.min, max_units)\
+                range_class = globals()[unit_range.__class__.__name__]
+                units = range_class(settings.neuron_range.min, max_units)\
                     .random_in_range(rng)
         
         activation = rng.choice(settings.activations)
