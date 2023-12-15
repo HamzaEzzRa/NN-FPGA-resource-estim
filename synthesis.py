@@ -14,7 +14,7 @@ def print_hls_config(d, indent=0):
         else:
             print(':' + ' ' * (20 - len(key) - 2 * indent) + str(value))
 
-def to_hls(model, output_dir, precisions, strategy, reuse_factor):
+def to_hls(model, output_dir, precisions, strategy, reuse_factor, board='pynq-z2'):
     config = hls4ml.utils.config_from_keras_model(model, granularity='model')
     # config = hls4ml.utils.config_from_keras_model(model, granularity='name')
     config['Model']['Precision'] = precisions['Model']
@@ -36,7 +36,7 @@ def to_hls(model, output_dir, precisions, strategy, reuse_factor):
         output_dir=output_dir,
         backend='VivadoAccelerator',
         clock_period='10',
-        board='pynq-z2'
+        board=board
     )
     hls_model.compile()
 
