@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from multiprocessing import Pool
 
 import hls4ml
 from data_gen import GeneratorSettings, generate_fc_network
@@ -8,7 +9,8 @@ from synthesis import to_hls
 
 from utils import *
 
-if __name__ == '__main__':
+
+def generate(paths):
     # settings = GeneratorSettings(
     #     input_range=Power2Range(16, 128),
     #     layer_range=IntRange(2, 6),
@@ -74,8 +76,8 @@ if __name__ == '__main__':
             rnd_model = generate_fc_network(settings)
             model_config = parse_keras_config(rnd_model, reuse_factor)
             # print(model_config)
-                        
-            hls_output_dir = './hls4ml_prj'
+
+            hls_output_dir = paths[0]
             precisions = {
                 'Model': precision
             }
@@ -96,9 +98,25 @@ if __name__ == '__main__':
                 'myproject_prj/solution1/syn/report/myproject_axi_csynth.rpt'
             ))
             save_to_json(
-                model_config, hls_config, res_report, latency_report, board
+                model_config,
+                hls_config,
+                res_report,
+                latency_report,
+                board,
+                file_path=paths[1]
             )
             
             tf.keras.backend.clear_session()
         except Exception as e:
             print(e)
+
+if __name__ == '__main__':
+    n_procs = 2
+    pool = Pool(processes=n_procs)
+    pool.map(
+        generate,
+        [
+            (f'./hls4ml_prj-{part}', f'./dataset-{part}.json')\
+                for part in range(1, n_procs + 1)
+        ]
+    )
