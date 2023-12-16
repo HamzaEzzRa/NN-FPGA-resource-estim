@@ -45,30 +45,51 @@ class FloatRange:
 def res_from_report(path):
     with open(path, 'r') as file:
         content = file.read()
+    content_lines = content.split('\n')
  
-    # Use regular expressions to find the numbers in the "Total" row
     total_match = re.search(r'\|Total\s+\|(.+)\|', content)
-    latency_match = re.search(r'\bLatency', content)
+    latency_match = re.search(r'Latency', content)
+    clock_match = re.search(r'\|ap_clk\s+\|(.+)\|', content)
  
     res_dict = {}
     if total_match:
-        # Extract numbers from the matched string
         numbers_str = total_match.group(1).split('|')
         keys = ['BRAM', 'DSP', 'FF', 'LUT', 'URAM']
         res_dict = {key: int(num.strip()) if num.strip().isdigit() else 0 for key, num in zip(keys, numbers_str)}
     
     latency_dict = {}
     if latency_match:
-        latency_line_number = content.count('\n', 0, latency_match.start()) + 1
-        # Go down 5 lines to find numbers
-        numbers_lines = content.split('\n')[latency_line_number + 5]
-        # Extract numbers from the line
-        numbers_str = re.findall(r'\b(\d+.\d+)\b', numbers_lines)[:4]
-        keys = ['cycles_min', 'cycles_max', 'abs_min', 'abs_max']
-        latency_dict = {
+        numbers_line = content.count('\n', 0, latency_match.start())
+        
+        numbers_str = []
+        while len(numbers_str) < 2:
+            numbers_line += 1
+            numbers_str = re.findall(
+                r'\d+\.\d+|\d+',
+                content_lines[numbers_line]
+            )
+            
+            # print(numbers_str)
+
+        numbers_str = numbers_str[:2]
+        keys = ['cycles_min', 'cycles_max']
+        latency_dict.update({
             key: int(num.strip()) if num.strip().isdigit() else float(num.strip())\
                 for key, num in zip(keys, numbers_str)
-        }
+        })
+    
+    if clock_match:
+        numbers_line = content.count('\n', 0, clock_match.start())
+        
+        numbers_str = numbers_str = re.findall(
+            r'\d+\.\d+|\d+',
+            content_lines[numbers_line]
+        )[:2]
+        keys = ['target_clock', 'estimated_clock']
+        latency_dict.update({
+            key: int(num.strip()) if num.strip().isdigit() else float(num.strip())\
+                for key, num in zip(keys, numbers_str)
+        })
     
     return res_dict, latency_dict
     
@@ -108,4 +129,8 @@ def get_closest_reuse_factor(n_in, n_out, chosen_rf):
         return before
 
 if __name__ == '__main__':
-    res_from_report('./myproject_axi_csynth.rpt')
+    res_dict, latency_dict = res_from_report(
+        './myproject_axi_csynth.rpt'
+        # './hls4ml_prj-1/myproject_prj/solution1/syn/report/myproject_axi_csynth.rpt'
+    )
+    print(latency_dict)
