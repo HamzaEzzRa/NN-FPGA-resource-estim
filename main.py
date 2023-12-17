@@ -1,8 +1,8 @@
 import os
+import subprocess
 import time
+from concurrent.futures.process import ProcessPoolExecutor
 from datetime import datetime
-from multiprocessing import Pool
-from signal import SIGINT, signal
 
 import hls4ml
 import numpy as np
@@ -13,9 +13,6 @@ from synthesis import to_hls
 
 from utils import *
 
-
-def handler(signalnum, frame):
-    raise TypeError
 
 def generate(args):
     rng = np.random.default_rng()
@@ -42,7 +39,7 @@ def generate(args):
     #     # global_dropout_probability=0.0,
     #     # global_skip_probability=0.0,
         
-    #     verbose=1
+    #     verbose=0
     # )
     
     settings = GeneratorSettings(
@@ -69,8 +66,10 @@ def generate(args):
         verbose=0
     )
     
-    for i in range(1):
+    n_models = 400
+    for i in range(n_models):
         try:
+            # reuse_factor = 32
             reuse_factor = int(rng.choice([1, 2, 4, 8, 16, 32, 64]))
             precision = rng.choice([
                 'ap_fixed<8, 4>',
@@ -78,6 +77,7 @@ def generate(args):
                 'ap_fixed<2, 1>',
                 'ap_fixed<16, 6>'
             ])
+            # strategy = 'Resource'
             strategy = rng.choice(['Latency', 'Resource', 'Resource'])
             board = rng.choice([
                 'pynq-z2',
@@ -88,7 +88,7 @@ def generate(args):
             model_config = parse_keras_config(rnd_model, reuse_factor)
             # print(model_config)
 
-            # hls_output_dir = hls_dir
+            # hls_output_dir = './hls4ml_prj'
             precisions = {
                 'Model': precision
             }
@@ -101,8 +101,15 @@ def generate(args):
                 board=board
             )
 
-            hls_model.build(csim=False, synth=True, export=False, bitfile=False)
+            result, proc = hls_model.build(
+                csim=False,
+                synth=True,
+                export=False,
+                bitfile=False
+            )
             # hls4ml.report.read_vivado_report(hls_output_dir)
+            proc.terminate()
+            # print(result)
 
             res_report, latency_report = res_from_report(os.path.join(
                 hls_output_dir,
@@ -117,24 +124,42 @@ def generate(args):
                 file_path=json_path
             )
             
+            del rnd_model
+            del hls_model
             tf.keras.backend.clear_session()
         except Exception as e:
             print(e)
 
 if __name__ == '__main__':
-    n_procs = 3
-    with Pool(n_procs) as p:
-        result = p.map_async(
-            generate,
-            [
-                {
-                    'hls_dir': f'./hls4ml_prj-{proc}',
-                    'json_path': f'./dataset-{proc}.json',
-                } for proc in range(1, n_procs + 1)
-            ]
-        )
-        while not result.ready():
-            time.sleep(1)
-        result = result.get()
-        p.terminate()
-        p.join()
+    n_procs = 2
+    pool = ProcessPoolExecutor()
+    pool.map(
+        generate,
+        [
+            {
+                'hls_dir': f'./hls4ml_prj-{proc}',
+                'json_path': f'./dataset-{proc}.json',
+            } for proc in range(1, n_procs + 1)
+        ],
+    )
+    pool.shutdown()
+    # n_procs = 2
+    # with Pool(n_procs) as p:
+    #     result = p.map_async(
+    #         generate,
+    #         [
+    #             {
+    #                 'hls_dir': f'./hls4ml_prj-{proc}',
+    #                 'json_path': f'./dataset-{proc}.json',
+    #             } for proc in range(1, n_procs + 1)
+    #         ]
+    #     )
+    #     while not result.ready():
+    #         time.sleep(1)
+    #     result = result.get()
+    #     p.terminate()
+    #     p.join()
+    # generate({
+    #     'hls_dir': './hls4ml_prj-1',
+    #     'json_path': './dataset-1.json',
+    # })

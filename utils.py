@@ -92,7 +92,18 @@ def res_from_report(path):
         })
     
     return res_dict, latency_dict
+
+def get_count_from_files(name_pattern):
+    count = 0
     
+    json_paths = glob(name_pattern)
+    for path in json_paths:
+        with open(path, 'r') as json_file:
+            json_data = json.load(json_file)
+            count += len(json_data)
+
+    return count
+
 # from hls4ml repo
 def _validate_reuse_factor(n_in, n_out, rf):
     multfactor = min(n_in, rf)
@@ -129,8 +140,11 @@ def get_closest_reuse_factor(n_in, n_out, chosen_rf):
         return before
 
 if __name__ == '__main__':
-    res_dict, latency_dict = res_from_report(
-        './myproject_axi_csynth.rpt'
-        # './hls4ml_prj-1/myproject_prj/solution1/syn/report/myproject_axi_csynth.rpt'
-    )
-    print(latency_dict)
+    # res_dict, latency_dict = res_from_report(
+    #     './myproject_axi_csynth.rpt'
+    #     # './hls4ml_prj-1/myproject_prj/solution1/syn/report/myproject_axi_csynth.rpt'
+    # )
+    # print(latency_dict)
+    
+    count = get_count_from_files('./dataset*.json')
+    print(count)
