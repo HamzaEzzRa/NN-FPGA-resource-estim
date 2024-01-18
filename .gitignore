@@ -163,3 +163,9 @@ cython_debug/
 hls4ml*
 !*.py
 *checkpoints
+*logs
+*search
+*.rpt
+*.zip
+*.tar
+*.tar.gz

@@ -7,10 +7,10 @@ from datetime import datetime
 import hls4ml
 import numpy as np
 import tensorflow as tf
+
 from data_gen import GeneratorSettings, generate_fc_network
 from network_parser import *
 from synthesis import to_hls
-
 from utils import *
 
 
@@ -72,9 +72,9 @@ def generate(args):
             # reuse_factor = 32
             reuse_factor = int(rng.choice([1, 2, 4, 8, 16, 32, 64]))
             precision = rng.choice([
-                'ap_fixed<8, 4>',
-                'ap_fixed<8, 3>',
                 'ap_fixed<2, 1>',
+                'ap_fixed<8, 3>',
+                'ap_fixed<8, 4>',
                 'ap_fixed<16, 6>'
             ])
             # strategy = 'Resource'

@@ -1,6 +1,8 @@
+import json
 import math
 import re
 from bisect import bisect_left
+from glob import glob
 
 import numpy as np
 
@@ -139,6 +141,14 @@ def get_closest_reuse_factor(n_in, n_out, chosen_rf):
     else:
         return before
 
+def sanitize_json(filename):
+    json_data = []
+    with open(filename, 'r') as json_file:
+        json_data = json.load(json_file)
+
+    for model in json_data:
+        latency_report = model['latency_report']
+
 if __name__ == '__main__':
     # res_dict, latency_dict = res_from_report(
     #     './myproject_axi_csynth.rpt'
@@ -146,5 +156,8 @@ if __name__ == '__main__':
     # )
     # print(latency_dict)
     
-    count = get_count_from_files('./dataset*.json')
+    count = get_count_from_files('./datasets/dataset*.json')
     print(count)
+
+    json_file = './datasets/mehdi-dataset.json'
+    sanitize_json(json_file)
