@@ -341,12 +341,12 @@ def hp_search(inputs, targets):
     
     tuner = kt.Hyperband(
         hypermodel=model_builder,
-        objective="val_mape",
-        max_epochs=20,
+        objective='val_mape',
+        max_epochs=50,
         factor=3,
-        hyperband_iterations=1,
-        directory="./hp-search",
-        project_name="NN-estim",
+        hyperband_iterations=2,
+        directory='./hp-search',
+        project_name=start_time,
     )
     tuner.search_space_summary()
     
