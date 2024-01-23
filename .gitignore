@@ -169,3 +169,4 @@ hls4ml*
 *.zip
 *.tar
 *.tar.gz
+!supported_boards.*
