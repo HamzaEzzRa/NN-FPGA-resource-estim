@@ -39,6 +39,13 @@ class LSTMSettings:
         32
     ])
     
+    embedding_outputs: list = field(default_factory = lambda: [
+        16,
+        16,
+        16,
+        16
+    ])
+    
     dense_layers: list = field(default_factory = lambda: [
         128,
         128,
@@ -56,6 +63,13 @@ class TransformerSettings:
     ff_dim: int = 128
     output_dim: int = 64
     dropout_rate: float = 0.1
+    
+    embedding_outputs: list = field(default_factory = lambda: [
+        16,
+        16,
+        16,
+        16
+    ])
     
     dense_layers: list = field(default_factory = lambda: [
         128,
@@ -124,6 +138,7 @@ def mape(y_true, y_pred):
 
     epsilon = 1
     diff = tf.abs((y_true - y_pred) / tf.maximum(tf.abs(y_true), epsilon))
+    # diff = tf.abs((y_true - y_pred))
 
     return 100.0 * tf.reduce_mean(diff)
 
@@ -157,7 +172,7 @@ def get_model(settings, verbose=0):
     layer_type_inputs = Input(shape=(None, 1))
     layer_type_embedding = tf.squeeze(Embedding(
         input_dim=len(layer_type_map) + 1,
-        output_dim=16
+        output_dim=settings.embedding_outputs[0]
     )(layer_type_inputs), axis=-2)
     # print(layer_type_embedding.shape)
     
@@ -166,7 +181,7 @@ def get_model(settings, verbose=0):
     strategy_inputs = Input(shape=(None, 1))
     strategy_embedding = tf.squeeze(Embedding(
         input_dim=len(strategy_map) + 1,
-        output_dim=16
+        output_dim=settings.embedding_outputs[1]
     )(strategy_inputs), axis=-2)
     # print(strategy_embedding.shape)
     
@@ -175,7 +190,7 @@ def get_model(settings, verbose=0):
     precision_inputs = Input(shape=(None, 1))
     precision_embedding = tf.squeeze(Embedding(
         input_dim=len(precision_map) + 1,
-        output_dim=16
+        output_dim=settings.embedding_outputs[2]
     )(precision_inputs), axis=-2)
     # print(precision_embedding.shape)
     
@@ -184,7 +199,7 @@ def get_model(settings, verbose=0):
     board_inputs = Input(shape=(None, 1))
     board_embedding = tf.squeeze(Embedding(
         input_dim=len(board_map) + 1,
-        output_dim=16
+        output_dim=settings.embedding_outputs[3]
     )(board_inputs), axis=-2)
     # print(board_embedding.shape)
     
@@ -247,7 +262,8 @@ def get_model(settings, verbose=0):
 def model_builder(hp):
     settings = None
 
-    model_head = hp.Choice(name='head', values=['lstm', 'transformer'])
+    # model_head = hp.Choice(name='head', values=['lstm', 'transformer'])
+    model_head = hp.Choice(name='head', values=['lstm'])
     if model_head == 'lstm':
         settings = LSTMSettings()
         
@@ -263,6 +279,12 @@ def model_builder(hp):
             output_dim=hp.Int(name='output_dim', min_value=16, max_value=128, step=16),
             dropout_rate=hp.Float(name='transformer_dropout', min_value=0.0, max_value=0.5, step=0.1)
         )
+    
+    embedding_count = 4
+    settings.embedding_outputs = [
+        hp.Int(name=f'embedding_output_{i}', min_value=4, max_value=16, step=4)\
+            for i in range(embedding_count)
+    ]
     
     dense_depth = hp.Int(name='dense_depth', min_value=1, max_value=6)
     settings.dense_layers = [
@@ -285,9 +307,11 @@ def model_builder(hp):
     elif optimizer == 'SGD':
         optimizer = SGD(lr)
     
+    loss = hp.Choice(name='loss', values=['mse', 'mae'])
+    
     model.compile(
         optimizer=optimizer,
-        loss=hp.Choice(name='loss', values=['mse', 'mae']),
+        loss=loss,
         metrics=[mape]
     )
     
@@ -304,20 +328,29 @@ def prepare_dataset(inputs, targets, batch_size):
         },
         targets
     ))
-    train_data = dataset.shuffle(len(dataset)).repeat(10).batch(batch_size)
+    # train_data = dataset.shuffle(len(dataset)).repeat(10).batch(batch_size)
+    train_data = dataset.shuffle(len(dataset))
+    val_data = dataset.take(int(len(dataset) * 0.3))
+    val_data = val_data.batch(len(val_data))
+    train_data = dataset.skip(int(len(dataset) * 0.3)).repeat(10).batch(batch_size)
 
-    test_inputs, test_targets = padded_data_from_json('./datasets/mehdi-dataset.json')
-    test_dataset = tf.data.Dataset.from_tensor_slices((
-        {
-            "input_1": test_inputs[:, :, 0],
-            "input_2": test_inputs[:, :, 1],
-            "input_3": test_inputs[:, :, 2],
-            "input_4": test_inputs[:, :, 3],
-            "input_5": test_inputs[:, :, 4:]
-        },
-        test_targets
-    ))
-    val_data = test_dataset.shuffle(len(test_dataset)).batch(batch_size//2)
+    # test_inputs, test_targets, _ = padded_data_from_json(
+    #     './datasets/mehdi-dataset.json',
+    #     specific_boards=['pynq-z2']
+    # )
+    # print(test_inputs.shape)
+
+    # test_dataset = tf.data.Dataset.from_tensor_slices((
+    #     {
+    #         "input_1": test_inputs[:, :, 0],
+    #         "input_2": test_inputs[:, :, 1],
+    #         "input_3": test_inputs[:, :, 2],
+    #         "input_4": test_inputs[:, :, 3],
+    #         "input_5": test_inputs[:, :, 4:]
+    #     },
+    #     test_targets
+    # ))
+    # val_data = test_dataset.shuffle(len(test_dataset)).batch(len(test_dataset))
     
     return train_data, val_data
 
@@ -339,12 +372,19 @@ def hp_search(inputs, targets):
         embeddings_freq=1,
     )
     
-    tuner = kt.Hyperband(
+    # tuner = kt.Hyperband(
+    #     hypermodel=model_builder,
+    #     objective='val_mape',
+    #     max_epochs=20,
+    #     factor=3,
+    #     hyperband_iterations=2,
+    #     directory='./hp-search',
+    #     project_name=start_time,
+    # )
+    tuner = kt.BayesianOptimization(
         hypermodel=model_builder,
         objective='val_mape',
-        max_epochs=50,
-        factor=3,
-        hyperband_iterations=2,
+        max_trials=100,
         directory='./hp-search',
         project_name=start_time,
     )
@@ -359,7 +399,7 @@ def hp_search(inputs, targets):
     return tuner
     
 def train(inputs, targets):
-    epochs = 100
+    epochs = 50
     batch_size = 32
     lr = 1e-3
     verbose = 1
@@ -370,7 +410,7 @@ def train(inputs, targets):
     checkpoint_path = './estimation-checkpoints'
     
     model = get_model(
-        settings=LSTMSettings(),
+        settings=TransformerSettings(),
         verbose=verbose
     )
     model.compile(
@@ -397,7 +437,7 @@ def train(inputs, targets):
         )
         
         def scheduler(epoch, lr):
-            if (epoch + 1) % 30 == 0:
+            if (epoch + 1) % 20 == 0:
                 return lr * tf.math.exp(-0.2)
             return lr
         lr_callback = LearningRateScheduler(scheduler)
@@ -432,7 +472,10 @@ def train(inputs, targets):
 
     model.load_weights(checkpoint_file)
 
-    inputs, targets = padded_data_from_json('./datasets/mehdi-dataset.json')
+    inputs, targets = padded_data_from_json(
+        './datasets/complex/test_dataset.json',
+        data_filter
+    )
     test_dataset = tf.data.Dataset.from_tensor_slices((
         {
             "input_1": inputs[:, :, 0],
@@ -494,13 +537,21 @@ def train(inputs, targets):
     plt.show()
 
 if __name__ == '__main__':
-    inputs, targets = padded_data_from_json('./datasets/dataset-*.json')
-    # print(inputs.shape)
-    # print(targets.shape)
+    data_filter = NetworkDataFilter(
+        strategies = ['Latency'],
+        exclude_layers = []
+    )
+    
+    inputs, targets = padded_data_from_json(
+        './datasets/complex/*.json',
+        data_filter
+    )
+    print(inputs.shape)
+    print(targets.shape)
     
     input_shape = inputs.shape[1:]
     output_shape = targets.shape[1:]
     
-    # train(inputs, targets)
-    tuner = hp_search(inputs, targets)
-    print(tuner.results_summary())
+    train(inputs, targets)
+    # tuner = hp_search(inputs, targets)
+    # print(tuner.results_summary())

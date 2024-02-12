@@ -1,10 +1,41 @@
 import json
 import os
+from dataclasses import asdict, dataclass, field
 from glob import glob
 
 import numpy as np
 
 from utils import get_closest_reuse_factor
+
+
+@dataclass
+class NetworkDataFilter:
+    # The min/max settings are ignored if 0
+    min_layers: int = 0
+    max_layers: int = 0
+    min_reuse_factor: int = 0
+    max_reuse_factor: int = 0
+    
+    # Exclude models that contains specific layers
+    exclude_layers: list = field(default_factory = lambda: [])
+    
+    strategies: list = field(default_factory = lambda: [
+        'Resource',
+        'Latency'
+    ])
+    
+    precisions: list = field(default_factory = lambda: [
+        'ap_fixed<2, 1>',
+        'ap_fixed<8, 3>',
+        'ap_fixed<8, 4>',
+        'ap_fixed<16, 6>'
+    ])
+    
+    boards: list = field(default_factory = lambda: [
+        'pynq-z2',
+        'zcu102',
+        'alveo-u200'
+    ])
 
 layer_type_map = {
     'inputlayer': 1,
@@ -39,6 +70,41 @@ with open(boards_file, 'r') as json_file:
 board_map = {
     key.lower(): value + 1 for value, key in enumerate(boards_data.keys())
 }
+
+def filter_match(model_data, data_filter: NetworkDataFilter):
+    n_layers = len(model_data['model_config'])
+    if (data_filter.min_layers > 0 and n_layers < data_filter.min_layers)\
+    or (data_filter.max_layers > 0 and n_layers > data_filter.max_layers):
+        return False
+    
+    for layer_data in model_data['model_config']:
+        reuse_factor = layer_data['reuse_factor']
+        if (data_filter.min_reuse_factor > 0 and reuse_factor < data_filter.min_reuse_factor)\
+        or (data_filter.max_reuse_factor > 0 and reuse_factor > data_filter.max_reuse_factor):
+            return False
+
+        layer_class = layer_data['class_name']
+        if layer_class in data_filter.exclude_layers:
+            return False
+    
+        if layer_class == 'Activation'\
+        and layer_data['activation'] in data_filter.exclude_layers:
+            return False
+    
+    hls_data = model_data['hls_config']['Model']
+    strategy = hls_data['Strategy']
+    if strategy not in data_filter.strategies:
+        return False
+    
+    precision = hls_data['Precision']
+    if precision not in data_filter.precisions:
+        return False
+    
+    board = model_data['board']
+    if board not in data_filter.boards:
+        return False
+
+    return True
 
 def parse_keras_config(model, rf):
     layers_data = []
@@ -121,12 +187,21 @@ def save_to_json(
         with open(file_path, 'w') as json_file:
             json.dump([model_info], json_file, indent=indent)
 
-def padded_data_from_json(name_pattern):
+def padded_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
     json_data = []
     json_files = glob(name_pattern)
     for filename in json_files:
         with open(filename, 'r') as json_file:
             json_data += json.load(json_file)
+
+    # Add filtering to the json data
+    if data_filter is not None:
+        filtered_data = []
+        for model in json_data:
+            if filter_match(model, data_filter):
+                filtered_data.append(model)
+
+        json_data = filtered_data
 
     inputs = []
     targets = []
@@ -135,13 +210,16 @@ def padded_data_from_json(name_pattern):
         max_layer_depth = max(max_layer_depth, len(model['model_config']))
     
     for model in json_data:
+        target_board = model['board']
+        # if specific_boards is None or specific_boards == []\
+        # or target_board in specific_boards:
+        
         config_data = []
         
         hls_config = model['hls_config']['Model']
         hls_precision = hls_config['Precision']
         hls_strategy = hls_config['Strategy']
         
-        target_board = model['board']
         model_config = model['model_config']
         for layer in model_config:
             layer_type = layer['class_name']
@@ -188,7 +266,7 @@ def padded_data_from_json(name_pattern):
         cycles_max = latency_report['cycles_max']
         # estimated_clock = latency_report['estimated_clock']
         
-        board_data = boards_data['pynq-z2']
+        board_data = boards_data['zcu102']
         # board_data = boards_data[target_board]
         max_bram = board_data['max_bram']
         max_dsp = board_data['max_dsp']
@@ -196,9 +274,9 @@ def padded_data_from_json(name_pattern):
         max_lut = board_data['max_lut']
         
         targets.append([
-            bram / max_bram,
-            dsp / max_dsp,
-            ff / max_ff,
+            bram / (max_bram * 0.1),
+            dsp / (max_dsp * 0.1),
+            ff / (max_ff * 0.1),
             lut / max_lut,
             # cycles_min,
             # cycles_max,
@@ -214,7 +292,10 @@ def split_data_from_json(name_pattern):
     pass
 
 if __name__ == '__main__':
-    inputs, targets = padded_data_from_json('./datasets/*.json')
+    inputs, targets = padded_data_from_json(
+        './datasets/*.json',
+        specific_boards=['pynq-z2', 'zcu102', 'alveo-u200']
+    )
     print(len(inputs))
     
     rnd_idx = np.random.randint(0, high=len(inputs))
