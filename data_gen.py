@@ -125,7 +125,7 @@ def generate_fc_network(settings: GeneratorSettings, rng=None):
                 if bias_limit <= 0:
                     max_units = 1
                 else:
-                    if range_class_name == 'Power2Range':
+                    if range_class_name == Power2Range.__name__:
                         bias_limit = 2 ** int(np.log2(bias_limit))
                     max_units = min(
                         max_units,
@@ -136,7 +136,7 @@ def generate_fc_network(settings: GeneratorSettings, rng=None):
                 if bn_limit <= 0:
                     max_units = 1
                 else:
-                    if range_class_name == 'Power2Range':
+                    if range_class_name == Power2Range.__name__:
                         bn_limit = 2 ** int(np.log2(bn_limit))
                     max_units = min(
                         max_units,
@@ -165,3 +165,28 @@ def generate_fc_network(settings: GeneratorSettings, rng=None):
         model.summary()
     
     return model
+
+def get_submodels(base_model, verbose=0):
+    submodels = []
+    sublayers = []
+    
+    base_input = base_model.input
+    input_shape = base_model.input_shape
+    for layer in base_model.layers[1:]:
+        sublayers.append(layer.output)
+
+        model = Model(inputs=base_input, outputs=sublayers[-1])
+        model.build([None] + list(input_shape))
+
+        if verbose > 0:
+            model.summary()
+        
+        submodels.append(model)
+    
+    return submodels
+
+if __name__ == '__main__':
+    rng = np.random.default_rng(1337)
+    nn = generate_fc_network(GeneratorSettings(), rng)
+
+    get_submodels(nn, verbose=1)
