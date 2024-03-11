@@ -187,6 +187,122 @@ def save_to_json(
         with open(file_path, 'w') as json_file:
             json.dump([model_info], json_file, indent=indent)
 
+def simple_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
+    json_data = []
+    json_files = glob(name_pattern)
+    for filename in json_files:
+        with open(filename, 'r') as json_file:
+            json_data += json.load(json_file)
+
+    # Add filtering to the json data
+    if data_filter is not None:
+        filtered_data = []
+        for model_data in json_data:
+            if filter_match(model_data, data_filter):
+                filtered_data.append(model_data)
+
+        json_data = filtered_data
+
+    inputs = []
+    targets = []
+    for model_data in json_data:
+        target_board = model_data['board']
+        model_config = model_data['model_config']
+        
+        input_layer_count = len([x for x in model_config if x['class_name'] == 'InputLayer'])
+        dense_layer_count = len([x for x in model_config if x['class_name'] == 'Dense'])
+        bn_layer_count = len([x for x in model_config if x['class_name'] == 'BatchNormalization'])
+        add_layer_count = len([x for x in model_config if x['class_name'] == 'Add'])
+        concatenate_layer_count = len([x for x in model_config if x['class_name'] == 'Concatenate'])
+        dropout_layer_count = len([x for x in model_config if x['class_name'] == 'Dropout'])
+        
+        relu_layer_count = len(
+            [x for x in model_config\
+            if x['class_name'] == 'Activation' and x['activation'] == 'relu']
+        )
+        sigmoid_layer_count = len(
+            [x for x in model_config\
+            if x['class_name'] == 'Activation' and x['activation'] == 'sigmoid']
+        )
+        tanh_layer_count = len(
+            [x for x in model_config\
+            if x['class_name'] == 'Activation' and x['activation'] == 'tanh']
+        )
+        softmax_layer_count = len(
+            [x for x in model_config\
+            if x['class_name'] == 'Activation' and x['activation'] == 'softmax']
+        )
+        
+        avg_dense_parameters = np.mean([x['parameters'] for x in model_config if x['class_name'] == 'Dense'])
+        avg_dense_inputs = np.mean([np.prod([x for x in layer['input_shape'] if x is not None]) for layer in model_config if layer['class_name'] == 'Dense'])
+        avg_dense_outputs = np.mean([np.prod([x for x in layer['output_shape'] if x is not None]) for layer in model_config if layer['class_name'] == 'Dense'])
+        avg_dense_reuse_factor = np.mean([x['reuse_factor'] for x in model_config if x['class_name'] == 'Dense'])
+        
+        hls_config = model_data['hls_config']['Model']
+        hls_precision = hls_config['Precision']
+        hls_strategy = hls_config['Strategy']
+        
+        inputs.append([
+            hls_strategy.lower(),
+            hls_precision.lower(),
+            target_board.lower(),
+            # strategy_map[hls_strategy.lower()],
+            # precision_map[hls_precision.lower()],
+            # board_map[target_board.lower()],
+            # input_layer_count,
+            dense_layer_count,
+            bn_layer_count,
+            add_layer_count,
+            concatenate_layer_count,
+            dropout_layer_count,
+            relu_layer_count,
+            sigmoid_layer_count,
+            tanh_layer_count,
+            softmax_layer_count,
+            avg_dense_parameters,
+            avg_dense_inputs,
+            avg_dense_outputs,
+            avg_dense_reuse_factor
+        ])
+        
+        res_report = model_data['res_report']
+        bram = res_report['BRAM']
+        dsp = res_report['DSP']
+        ff = res_report['FF']
+        lut = res_report['LUT']
+        
+        # latency_report = model_data['latency_report']
+        # cycles_min = latency_report['cycles_min']
+        # cycles_max = latency_report['cycles_max']
+        # estimated_clock = latency_report['estimated_clock']
+        
+        # board_data = boards_data['zcu102']
+        board_data = boards_data[target_board]
+        max_bram = board_data['max_bram']
+        max_dsp = board_data['max_dsp']
+        max_ff = board_data['max_ff']
+        max_lut = board_data['max_lut']
+        
+        targets.append([
+            # max(1 / max_bram, min(bram / max_bram, 2.0)) * 100,
+            # max(1 / max_dsp, min(dsp / max_dsp, 2.0)) * 100,
+            # max(1 / max_ff, min(ff / max_ff, 2.0)) * 100,
+            # max(1 / max_lut, min(lut / max_lut, 10.0)) * 100,
+            # min(bram / max_bram, 2.0) * 100,
+            # min(dsp / max_dsp, 2.0) * 100,
+            # min(ff / max_ff, 2.0) * 100,
+            # min(lut / max_lut, 2.0) * 100,
+            (bram / max_bram) * 100,
+            (dsp / max_dsp) * 100,
+            (ff / max_ff) * 100,
+            (lut / max_lut) * 100
+        ])
+
+    inputs = np.asarray(inputs)
+    targets = np.asarray(targets, dtype=np.float64)
+    
+    return inputs, targets
+
 def padded_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
     json_data = []
     json_files = glob(name_pattern)
@@ -203,7 +319,8 @@ def padded_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
 
         json_data = filtered_data
 
-    inputs = []
+    global_inputs = []
+    seq_inputs = []
     targets = []
     max_layer_depth = 0
     for model in json_data:
@@ -211,10 +328,8 @@ def padded_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
     
     for model in json_data:
         target_board = model['board']
-        # if specific_boards is None or specific_boards == []\
-        # or target_board in specific_boards:
         
-        config_data = []
+        layers_data = []
         
         hls_config = model['hls_config']['Model']
         hls_precision = hls_config['Precision']
@@ -239,21 +354,25 @@ def padded_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
             layer_parameters = layer['parameters']
             reuse_factor = layer['reuse_factor']
             
-            config_data.append([
+            layers_data.append([
                 layer_type_map[layer_type.lower()],
-                strategy_map[hls_strategy.lower()],
                 precision_map[hls_precision.lower()],
-                board_map[target_board.lower()],
                 input_shape,
                 output_shape,
                 layer_parameters,
                 reuse_factor,
             ])
         
-        for i in range(max_layer_depth - len(config_data)):
-            config_data.append([0] * len(config_data[0]))
+        for i in range(max_layer_depth - len(layers_data)):
+            layers_data.append([0] * len(layers_data[0]))
         
-        inputs.append(config_data)
+        global_inputs.append([
+            strategy_map[hls_strategy.lower()],
+            board_map[target_board.lower()],
+            len(model_config)
+        ])
+        
+        seq_inputs.append(layers_data)
 
         res_report = model['res_report']
         bram = res_report['BRAM']
@@ -266,27 +385,67 @@ def padded_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
         cycles_max = latency_report['cycles_max']
         # estimated_clock = latency_report['estimated_clock']
         
-        board_data = boards_data['zcu102']
-        # board_data = boards_data[target_board]
+        # board_data = boards_data['zcu102']
+        board_data = boards_data[target_board]
         max_bram = board_data['max_bram']
         max_dsp = board_data['max_dsp']
         max_ff = board_data['max_ff']
         max_lut = board_data['max_lut']
         
+        # targets.append([
+        #     max(1, bram) / max_bram,
+        #     # max(1, dsp) / max_dsp,
+        #     # max(1, ff) / max_ff,
+        #     # max(1, lut) / max_lut,
+        #     # cycles_min,
+        #     # cycles_max,
+        #     # estimated_clock
+        # ])
+        
+        # targets.append([
+        #     max(0, min(bram, max_bram + 1)),
+        #     max(0, min(dsp, max_dsp + 1)),
+        #     max(0, min(ff, max_ff + 1)),
+        #     max(0, min(lut, max_lut + 1)),
+        #     # cycles_min,
+        #     # cycles_max,
+        #     # estimated_clock
+        # ])
+        
+        # targets.append([
+        #     max(1, min(bram, 2.0 * max_bram)),
+        #     max(1, min(dsp, 2.0 * max_dsp)),
+        #     max(1, min(ff, 2.0 * max_ff)),
+        #     max(1, min(lut, 2.0 * max_lut)),
+        #     # cycles_min,
+        #     # cycles_max,
+        #     # estimated_clock
+        # ])
+        
         targets.append([
-            bram / (max_bram * 0.1),
-            dsp / (max_dsp * 0.1),
-            ff / (max_ff * 0.1),
-            lut / max_lut,
-            # cycles_min,
-            # cycles_max,
-            # estimated_clock
+            # max(1 / max_bram, min(bram / max_bram, 2.0)) * 100,
+            # max(1 / max_dsp, min(dsp / max_dsp, 2.0)) * 100,
+            # max(1 / max_ff, min(ff / max_ff, 2.0)) * 100,
+            max(1 / max_lut, min(lut / max_lut, 2.0)) * 100,
+        #     # cycles_min,
+        #     # cycles_max,
+        #     # estimated_clock
         ])
 
-    inputs = np.asarray(inputs)
-    targets = np.asarray(targets)
+    global_inputs = np.asarray(global_inputs)
+    seq_inputs = np.asarray(seq_inputs)
+    targets = np.asarray(targets, dtype=np.float64)
 
-    return inputs, targets
+    # targets -= targets.mean()
+    # targets /= targets.std()
+
+    # min_vals = np.min(targets, axis=0)
+    # max_vals = np.max(targets, axis=0)
+    # targets = (targets - min_vals) / (max_vals - min_vals)
+    
+    # print(targets)
+
+    return global_inputs, seq_inputs, targets
 
 def split_data_from_json(name_pattern):
     pass

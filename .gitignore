@@ -160,6 +160,9 @@ cython_debug/
 #.idea/
 
 *.json
+*.png
+*.jpg
+*.jpeg
 hls4ml*
 !*.py
 *checkpoints
