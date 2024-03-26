@@ -1,8 +1,10 @@
 import json
 import math
+import random
 import re
 from bisect import bisect_left
 from glob import glob
+from itertools import islice
 
 import numpy as np
 
@@ -148,6 +150,52 @@ def sanitize_json(filename):
 
     for model in json_data:
         latency_report = model['latency_report']
+
+def rnd_permutations(iterable, n_samples, start=2, max_perm=100000, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
+    
+    iterable = list(iterable)
+    s = len(iterable)
+    max_perms = min(math.factorial(s) + 1, max_perm)
+    rnd_indices = rng.choice(
+        range(start, max_perms),
+        size=min(n_samples, max_perms - start),
+        replace=False
+    ) - 1
+    
+    res = []
+    for idx in rnd_indices:
+        tmp = []
+        for x in range(s-1, -1, -1):
+            f = math.factorial(x)
+            d = idx // f
+            idx -= d * f
+            tmp.append(iterable[d])
+            # del(iterable[d])
+    
+        res.append(tmp)
+
+    return res
+
+def limited_reservoir_sampling(iterator, n_samples, max_iters=100000):
+    """
+    Performs reservoir sampling on the given iterator to n_samples,
+    but limits the total number of iterations.
+    """
+    max_iters = max(n_samples, max_iters)
+    
+    reservoir = list(islice(iterator, 0, n_samples))
+    random.shuffle(reservoir)
+    for i, item in enumerate(iterator, start=n_samples+1):
+        if i >= max_iters:
+            return reservoir
+        
+        j = random.randrange(i)
+        if j < n_samples:
+            reservoir[j] = item
+
+    return reservoir
 
 if __name__ == '__main__':
     # res_dict, latency_dict = res_from_report(

@@ -2,19 +2,32 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from glob import glob
+from itertools import permutations
 
 import numpy as np
+from keras.layers import Activation, BatchNormalization, Dense, Dropout, Input
+from keras.models import Model
+from tqdm import tqdm
 
-from utils import get_closest_reuse_factor
+from utils import get_closest_reuse_factor, limited_reservoir_sampling, rnd_permutations
 
 
 @dataclass
 class NetworkDataFilter:
-    # The min/max settings are ignored if 0
+    # The min/max settings are ignored if <= 0
     min_layers: int = 0
     max_layers: int = 0
     min_reuse_factor: int = 0
     max_reuse_factor: int = 0
+    
+    min_input_size: int = 0
+    max_input_size: int = 0
+    
+    min_output_size: int = 0
+    max_output_size: int = 0
+    
+    min_softmax_count: int = 0
+    max_softmax_count: int = 0
     
     # Exclude models that contains specific layers
     exclude_layers: list = field(default_factory = lambda: [])
@@ -77,6 +90,17 @@ def filter_match(model_data, data_filter: NetworkDataFilter):
     or (data_filter.max_layers > 0 and n_layers > data_filter.max_layers):
         return False
     
+    input_size = np.prod([x for x in model_data['model_config'][0]['input_shape'] if x is not None])
+    if (data_filter.min_input_size > 0 and input_size < data_filter.min_input_size)\
+    or (data_filter.max_input_size > 0 and input_size > data_filter.max_input_size):
+        return False
+    
+    output_size = np.prod([x for x in model_data['model_config'][-1]['output_shape'] if x is not None])
+    if (data_filter.min_output_size > 0 and output_size < data_filter.min_output_size)\
+    or (data_filter.max_output_size > 0 and output_size > data_filter.max_output_size):
+        return False
+    
+    softmax_count = 0
     for layer_data in model_data['model_config']:
         reuse_factor = layer_data['reuse_factor']
         if (data_filter.min_reuse_factor > 0 and reuse_factor < data_filter.min_reuse_factor)\
@@ -87,9 +111,15 @@ def filter_match(model_data, data_filter: NetworkDataFilter):
         if layer_class in data_filter.exclude_layers:
             return False
     
-        if layer_class == 'Activation'\
-        and layer_data['activation'] in data_filter.exclude_layers:
-            return False
+        if layer_class == 'Activation':
+            if layer_data['activation'].lower() == 'softmax':
+                softmax_count += 1
+            if layer_data['activation'] in data_filter.exclude_layers:
+                return False
+
+    if (data_filter.min_softmax_count > 0 and softmax_count < data_filter.min_softmax_count)\
+    or (data_filter.max_softmax_count > 0 and softmax_count > data_filter.max_softmax_count):
+        return False
     
     hls_data = model_data['hls_config']['Model']
     strategy = hls_data['Strategy']
@@ -187,6 +217,15 @@ def save_to_json(
         with open(file_path, 'w') as json_file:
             json.dump([model_info], json_file, indent=indent)
 
+def dump_json(models_info, file_path='./dataset.json', indent=2):
+    with open(file_path, 'w') as json_file:
+        json.dump([models_info[0]], json_file, indent=indent)
+        for model_info in models_info[1:]:
+            json_file.seek(os.stat(file_path).st_size - 2)
+            json_file.write(',\n' + ' ' * indent + '{}\n]'.format(
+                json.dumps(model_info, indent=indent)
+            ))
+
 def simple_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
     json_data = []
     json_files = glob(name_pattern)
@@ -242,7 +281,10 @@ def simple_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
         hls_precision = hls_config['Precision']
         hls_strategy = hls_config['Strategy']
         
-        inputs.append([
+        info = []
+        if 'model_id' in model_data:
+            info.append(model_data['model_id'])
+        inputs.append(info + [
             hls_strategy.lower(),
             hls_precision.lower(),
             target_board.lower(),
@@ -303,6 +345,32 @@ def simple_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
     
     return inputs, targets
 
+def parse_layer_data(layer_config):
+    layer_type = layer_config['class_name']
+    if layer_type == 'Activation':
+        layer_type = layer_config['activation']
+    
+    input_shape = layer_config['input_shape']
+    if layer_type in ['Add', 'Concatenate']:
+        input_shape = layer_config['output_shape']
+    input_shape = np.prod([
+        x for x in input_shape if x is not None
+    ])
+    
+    output_shape = np.prod([
+        x for x in layer_config['output_shape'] if x is not None
+    ])
+    layer_parameters = layer_config['parameters']
+    reuse_factor = layer_config['reuse_factor']
+
+    return [
+        layer_type_map[layer_type.lower()],
+        input_shape,
+        output_shape,
+        layer_parameters,
+        reuse_factor,
+    ]
+
 def padded_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
     json_data = []
     json_files = glob(name_pattern)
@@ -336,33 +404,11 @@ def padded_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
         hls_strategy = hls_config['Strategy']
         
         model_config = model['model_config']
-        for layer in model_config:
-            layer_type = layer['class_name']
-            if layer_type == 'Activation':
-                layer_type = layer['activation']
-            
-            input_shape = layer['input_shape']
-            if layer_type in ['Add', 'Concatenate']:
-                input_shape = layer['output_shape']
-            input_shape = np.prod([
-                x for x in input_shape if x is not None
-            ])
-            
-            output_shape = np.prod([
-                x for x in layer['output_shape'] if x is not None
-            ])
-            layer_parameters = layer['parameters']
-            reuse_factor = layer['reuse_factor']
-            
-            layers_data.append([
-                layer_type_map[layer_type.lower()],
-                precision_map[hls_precision.lower()],
-                input_shape,
-                output_shape,
-                layer_parameters,
-                reuse_factor,
-            ])
-        
+        for layer_config in model_config:
+            layers_data.append(
+                [precision_map[hls_precision.lower()]] + parse_layer_data(layer_config)
+            )
+                
         for i in range(max_layer_depth - len(layers_data)):
             layers_data.append([0] * len(layers_data[0]))
         
@@ -450,13 +496,184 @@ def padded_data_from_json(name_pattern, data_filter: NetworkDataFilter = None):
 def split_data_from_json(name_pattern):
     pass
 
-if __name__ == '__main__':
-    inputs, targets = padded_data_from_json(
-        './datasets/*.json',
-        specific_boards=['pynq-z2', 'zcu102', 'alveo-u200']
-    )
-    print(len(inputs))
+def sanitize_json_data(json_data, save_path=None, indent=2):
+    for idx in range(len(json_data)):
+        json_data[idx]['model_id'] = idx
     
-    rnd_idx = np.random.randint(0, high=len(inputs))
-    print(inputs[rnd_idx])
-    print(targets[rnd_idx])
+    if save_path is not None and save_path != '':
+        with open(save_path, 'w') as json_file:
+            json.dump(json_data, json_file, indent=indent)
+
+    return json_data
+
+def sanitize_json_files(name_pattern, save_path=None, indent=2):
+    json_data = []
+    json_files = glob(name_pattern)
+    for filename in json_files:
+        with open(filename, 'r') as json_file:
+            json_data += json.load(json_file)
+    
+    return sanitize_json_data(json_data, save_path)
+
+def layer_from_json(layer_info):
+    layer = None
+    if layer_info['class_name'] == 'Dense':
+        layer = Dense(layer_info['neurons'], use_bias=layer_info['use_bias'])
+    elif layer_info['class_name'] == 'Activation':
+        layer = Activation(layer_info['activation'])
+    elif layer_info['class_name'] == 'BatchNormalization':
+        layer = BatchNormalization()
+    elif layer_info['class_name'] == 'Dropout':
+        layer = Dropout(0.25)
+
+    return layer
+
+def network_from_json(model_json):
+    input_shape = model_json[0]['input_shape']
+    inputs = Input(shape=input_shape[1:])
+    
+    x = inputs
+    for layer_info in model_json[1:]:
+        x = layer_from_json(layer_info)(x)
+    outputs = x
+
+    model = Model(inputs=inputs, outputs=outputs)
+    return model
+
+def get_model_permutations(model_json, max_permutations):
+    # keras_model = network_from_json(model_json)
+    layer_count = len(model_json)
+    
+    last_dense_idx = 0
+    for idx, layer_info in enumerate(model_json[::-1]):
+        if layer_info['class_name'] == 'Dense':
+            last_dense_idx = layer_count - idx - 1
+            break
+    
+    # import time
+    # start_time = time.time()
+    # Reservoir sampling
+    # permut_layer_indices = limited_reservoir_sampling(
+    #     permutations(list(range(1, last_dense_idx))),
+    #     max_permutations,
+    #     max_iters=100000
+    # )
+    permut_layer_indices = rnd_permutations(
+        range(1, last_dense_idx),
+        max_permutations
+    )
+    # print(f'Permutation Time: {time.time() - start_time}')
+    
+    # print(permut_layer_indices)
+    input_shape = model_json[0]['input_shape']
+    # print(input_shape)
+    inputs = Input(shape=input_shape[1:])
+    permut_models = []
+    # start_time = time.time()
+    for layer_indices in permut_layer_indices:
+        x = inputs
+        for idx in layer_indices:
+            layer_info = model_json[idx]
+            x = layer_from_json(layer_info)(x)
+        for layer_info in model_json[last_dense_idx:]:
+            x = layer_from_json(layer_info)(x)
+        outputs = x
+        
+        model = Model(inputs=inputs, outputs=outputs)        
+        model.build(input_shape)
+        
+        permut_models.append(model)
+    # print(f'Build Time: {time.time() - start_time}')
+    
+    return permut_models
+
+def augment_dataset(name_pattern, max_permutations=5, data_filter: NetworkDataFilter = None, save_path=None, indent=2):
+    json_data = []
+    json_files = glob(name_pattern)
+    for filename in json_files:
+        with open(filename, 'r') as json_file:
+            json_data += json.load(json_file)
+    
+    if data_filter is not None:
+        filtered_data = []
+        for model_json in json_data:
+            if filter_match(model_json, data_filter):
+                filtered_data.append(model_json)
+
+        json_data = filtered_data
+    
+    for model_json in tqdm(json_data):
+        model_config = model_json['model_config']
+        hls_config = model_json['hls_config']
+        res_report = model_json['res_report']
+        latency_report = model_json['latency_report']
+        board = model_json['board']
+        
+        # Save original config
+        save_to_json(
+            model_config,
+            hls_config,
+            res_report,
+            latency_report,
+            board,
+            file_path=save_path
+        )
+        
+        # Add in the permutations
+        rf = hls_config['Model']['ReuseFactor']
+        model_permuts = get_model_permutations(model_config, max_permutations)
+        for permut in model_permuts:
+            permut_config = parse_keras_config(permut, rf)
+            if save_path is not None and save_path != '':
+                save_to_json(
+                    permut_config,
+                    hls_config,
+                    res_report,
+                    latency_report,
+                    board,
+                    file_path=save_path
+                )
+
+if __name__ == '__main__':
+    filename = './datasets/complex/sanitized_train.json'
+    
+    data_filter = NetworkDataFilter(
+        exclude_layers=['Concatenate', 'Add'],
+        max_output_size=200,
+    )
+    global_inputs, seq_inputs, targets = padded_data_from_json(
+        filename,
+        data_filter
+    )
+    print(global_inputs.shape)
+    print(seq_inputs.shape)
+    print(targets.shape)
+    
+    with open(filename, 'r') as json_file:
+        json_data = json.load(json_file)
+    
+    # model_json = json_data[0]['model_config']
+    # permut_models = get_model_permutations(model_json)
+    # for model in permut_models:
+    #     print('=' * 100)
+    #     model.summary()
+    
+    for perm in [2, 3, 8, 10]:
+        augmented_filename = f'./datasets/complex/augmented_train_{perm}p.json'
+        augment_dataset(
+            filename,
+            max_permutations=5,
+            data_filter=data_filter,
+            save_path=augmented_filename,
+            indent=2
+        )
+        global_inputs, seq_inputs, targets = padded_data_from_json(
+            augmented_filename,
+            data_filter
+        )
+        print(global_inputs.shape)
+        print(seq_inputs.shape)
+        print(targets.shape)
+    
+    # sanitize_json_files('./datasets/complex/dataset-*.json', './datasets/complex/sanitized_train.json')
+    # sanitize_json_files('./datasets/complex/test_dataset.json', './datasets/complex/sanitized_test.json')

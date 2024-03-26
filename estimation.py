@@ -33,6 +33,7 @@ from tensorflow.keras.optimizers import SGD, Adam
 from tensorflow.keras.utils import plot_model
 
 from network_parser import *
+from synthesis import to_hls
 
 seed_num = 1337
 np.random.seed(seed_num)
@@ -829,7 +830,7 @@ def model_builder(hp):
     
     return model
 
-def prepare_simple_dataset(inputs, targets, batch_size, val_ratio=0.2):
+def prepare_simple_dataset(inputs, targets, batch_size, val_ratio=0.2, train_repeats=10):
     dataset = tf.data.Dataset.from_tensor_slices((
         {
             'strategy': inputs[:, 0],
@@ -844,22 +845,22 @@ def prepare_simple_dataset(inputs, targets, batch_size, val_ratio=0.2):
     if val_ratio > 0.0:    
         train_data = dataset.shuffle(len(dataset))
         val_data = dataset.take(int(len(dataset) * val_ratio))
-        val_data = val_data.batch(len(val_data))
-    train_data = dataset.skip(int(len(dataset) * val_ratio)).repeat(10)\
+        val_data = val_data.batch(batch_size)
+    train_data = dataset.skip(int(len(dataset) * val_ratio)).repeat(train_repeats)\
         .shuffle(int((1 - val_ratio) * len(dataset))).batch(batch_size)
     # train_data = dataset.skip(int(len(dataset) * val_ratio))\
     #     .shuffle(int((1 - val_ratio) * len(dataset))).batch(batch_size)
 
     return train_data, val_data
 
-def prepare_seq_dataset(global_inputs, seq_inputs, targets, batch_size):
+def prepare_seq_dataset(global_inputs, seq_inputs, targets, batch_size, repeats=10):
     dataset = tf.data.Dataset.from_tensor_slices((
         {
             'strategy_input': global_inputs[:, 0],
             'board_input': global_inputs[:, 1],
             'num_layers_input': global_inputs[:, 2:],
-            'layer_type_input': seq_inputs[:, :, 0],
-            'layer_precision_input': seq_inputs[:, :, 1],
+            'layer_precision_input': seq_inputs[:, :, 0],
+            'layer_type_input': seq_inputs[:, :, 1],
             'layer_numerical_input': seq_inputs[:, :, 2:]
         },
         targets
@@ -869,8 +870,8 @@ def prepare_seq_dataset(global_inputs, seq_inputs, targets, batch_size):
     val_ratio = 0.2
     train_data = dataset.shuffle(len(dataset))
     val_data = dataset.take(int(len(dataset) * val_ratio))
-    val_data = val_data.batch(len(val_data))
-    train_data = dataset.skip(int(len(dataset) * val_ratio)).repeat(10)\
+    val_data = val_data.batch(batch_size)
+    train_data = dataset.skip(int(len(dataset) * val_ratio)).repeat(repeats)\
         .shuffle(int((1 - val_ratio) * len(dataset))).batch(batch_size)
     
     return train_data, val_data
@@ -970,7 +971,7 @@ def train(global_inputs, seq_inputs, targets, global_input_shape=global_input_sh
     verbose = 1
     train = True
     
-    train_data, val_data = prepare_seq_dataset(global_inputs, seq_inputs, targets, batch_size)
+    train_data, val_data = prepare_seq_dataset(global_inputs, seq_inputs, targets, batch_size, repeats=1)
         
     loss_weights = [10, 100, 10, 0.1]
     weighted_mae = weighted_mae_loss(loss_weights)
@@ -1062,7 +1063,7 @@ def train(global_inputs, seq_inputs, targets, global_input_shape=global_input_sh
     else:
         checkpoint_file = os.path.join(
             checkpoint_path,
-            '20240229-125830',
+            '20240325-221401',
             'best-checkpoint.hdf5'
         )
 
@@ -1077,8 +1078,8 @@ def train(global_inputs, seq_inputs, targets, global_input_shape=global_input_sh
             'strategy_input': global_inputs[:, 0],
             'board_input': global_inputs[:, 1],
             'num_layers_input': global_inputs[:, 2:],
-            'layer_type_input': seq_inputs[:, :, 0],
-            'layer_precision_input': seq_inputs[:, :, 1],
+            'layer_precision_input': seq_inputs[:, :, 0],
+            'layer_type_input': seq_inputs[:, :, 1],
             'layer_numerical_input': seq_inputs[:, :, 2:]
         },
         targets
@@ -1151,18 +1152,52 @@ def train(global_inputs, seq_inputs, targets, global_input_shape=global_input_sh
 
     return model
 
+def model_predict(predictor, model_to_predict, hls_config, board):
+    keras_config = parse_keras_config(model_to_predict, hls_config['reuse_factor'])
+    hls_precision = hls_config['Precision']
+    hls_strategy = hls_config['Strategy']
+    
+    layers_data = np.asarray([
+        [precision_map[hls_precision.lower()]] + parse_layer_data(layer_config)\
+        for layer_config in keras_config
+    ])
+    # layers_data = layers_data[np.newaxis, ...]
+    print(layers_data.shape)
+    print(layers_data)
+    
+    inputs = {
+        'strategy_input': strategy_map[hls_strategy.lower()],
+        'board_input': board_map[board.lower()],
+        'num_layers_input': len(keras_config),
+        'layer_precision_input': layers_data[..., 0],
+        'layer_type_input': layers_data[..., 1],
+        'layer_numerical_input': layers_data[..., 2:]
+    }    
+    inputs = {
+        key: tf.convert_to_tensor([value]) for key, value in inputs.items()
+    }
+    
+    return predictor.predict(inputs, 0)
+
 if __name__ == '__main__':
     data_filter = NetworkDataFilter(
+        exclude_layers=['Concatenate', 'Add'],
+        max_output_size=200,
+        # max_output_size=100,
         # max_layers=8,
         # strategies = ['Resource'],
         # boards=['pynq-z2']
     )
     
-    use_sequence_data = False
+    use_sequence_data = True
 
     if use_sequence_data:
+        # global_inputs, seq_inputs, targets = padded_data_from_json(
+        #     './datasets/complex/dataset-*.json',
+        #     data_filter
+        # )
         global_inputs, seq_inputs, targets = padded_data_from_json(
-            './datasets/complex/dataset-*.json',
+            './datasets/complex/augmented_train_5p.json',
             data_filter
         )
         print(global_inputs.shape)
@@ -1173,7 +1208,14 @@ if __name__ == '__main__':
         seq_input_shape = seq_inputs.shape[1:]
         output_shape = targets.shape[1:]
         
-        train(global_inputs, seq_inputs, targets)
+        model = train(
+            global_inputs,
+            seq_inputs,
+            targets,
+            global_input_shape,
+            seq_input_shape,
+            output_shape
+        )
         
         # tuner = hp_search(global_inputs, seq_inputs, targets)
         # print(tuner.results_summary())
@@ -1186,7 +1228,47 @@ if __name__ == '__main__':
         input_shape = inputs.shape[1:]
         output_shape = targets.shape[1:]
         
-        train_dense_model(inputs, targets)
+        model = train_dense_model(inputs, targets)
         
         # tuner = dense_hp_search(inputs, targets)
         # print(tuner.results_summary())
+
+    input_size = 16
+    inputs = Input(input_size,)
+    x = Dense(32, use_bias=True)(inputs)
+    x = Activation('tanh')(x)
+    x = Dense(64, use_bias=True)(x)
+    x = Activation('relu')(x)
+    x = Dense(32, use_bias=True)(x)
+    x = Activation('relu')(x)
+    x = Dense(3, use_bias=True)(x)
+    outputs = Activation('relu')(x)
+    
+    model_to_predict = Model(inputs=inputs, outputs=outputs)
+    model_to_predict.build([None, input_size])
+
+    hls_config = {
+        'Precision': 'ap_fixed<8, 3>',
+        'Strategy': 'Resource',
+        'reuse_factor': 16,
+    }
+    target_board = 'pynq-z2'
+    
+    hls_model, _ = to_hls(
+        model_to_predict,
+        './hls4ml_prj',
+        {'Model': hls_config['Precision']},
+        strategy=hls_config['Strategy'],
+        reuse_factor=hls_config['reuse_factor'],
+        board=target_board,
+    )
+    result = hls_model.build(
+        csim=False,
+        synth=True,
+        export=False,
+        bitfile=False
+    )
+    print(f'Truth: {result}')
+    
+    prediction = model_predict(model, model_to_predict, hls_config, target_board)
+    print(f'Prediction: {prediction}')
